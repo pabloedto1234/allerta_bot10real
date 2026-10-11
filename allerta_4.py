@@ -1,4 +1,3 @@
-
 import os
 import re
 import asyncio
@@ -26,14 +25,13 @@ URL = (
 INTERVALLO = 60
 NOME_JOB = "controllo_allerte_sicilia"
 
-# Chat iscritte al monitoraggio.
-# Nota: questi dati vengono persi quando il bot si riavvia.
+# Chat iscritte al monitoraggio (in memoria)
 chat_ids = set()
 
-# Ultimo risultato inviato a ciascuna chat.
+# Ultima firma di allerta inviata a ciascuna chat
 ultimi_inviati = {}
 
-# Evita controlli simultanei del sito.
+# Evita controlli simultanei del sito
 controllo_in_corso = False
 
 
@@ -43,7 +41,6 @@ controllo_in_corso = False
 
 def find_allerta2():
     """Scarica il bollettino ed estrae le allerte della Sicilia."""
-
     req = urllib.request.Request(
         URL,
         headers={"User-Agent": "Mozilla/5.0"}
@@ -92,16 +89,9 @@ def find_allerta2():
     allerte = []
 
     for blocco in blocchi:
-
-        # Considera solo i blocchi che menzionano la Sicilia.
-        if not re.search(
-            r"\bSicilia\s*:",
-            blocco,
-            re.IGNORECASE
-        ):
+        # Considera solo i blocchi che menzionano la Sicilia
+        if not re.search(r"\bSicilia\s*:", blocco, re.IGNORECASE):
             continue
-        
-
 
         if not re.search(
             r"\bNord[-–‑]Orientale\s*,\s*versante\s+ionico\b",
@@ -116,6 +106,7 @@ def find_allerta2():
             re.IGNORECASE
         )
 
+        # Include GIALLA/GIALLO, ARANCIONE, ROSSA/ROSSO
         livello_match = re.search(
             r"/\s*ALLERTA\s*:?\s*"
             r"(GIALLA|GIALLO|ARANCIONE|ROSSA|ROSSO)\b",
@@ -129,7 +120,6 @@ def find_allerta2():
         rischio = rischio_match.group(1).strip().upper()
         livello = livello_match.group(1).upper()
 
-        # Uniforma i nomi dei livelli.
         if livello == "GIALLA":
             livello = "GIALLO"
         elif livello == "ROSSA":
@@ -140,12 +130,9 @@ def find_allerta2():
             "livello": livello
         }
 
-        # Evita eventuali duplicati.
         if risultato not in allerte:
             allerte.append(risultato)
 
-    # Non confondere un'estrazione vuota con un risultato valido
-    # se il parser non ha trovato alcun blocco riconoscibile.
     if not blocchi:
         raise ValueError(
             "Nessun blocco di criticità riconosciuto. "
@@ -159,11 +146,8 @@ def find_allerta2():
 # CONTROLLO PERIODICO E INVIO TELEGRAM
 # ==================================================
 
-async def find_allerta(
-    context: ContextTypes.DEFAULT_TYPE
-):
-    """Controlla il bollettino e invia notifiche solo se necessario."""
-
+async def find_allerta(context: ContextTypes.DEFAULT_TYPE):
+    """Controlla il bollettino e gestisce le notifiche con logica di rientro."""
     global controllo_in_corso
 
     if controllo_in_corso:
@@ -177,108 +161,95 @@ async def find_allerta(
     controllo_in_corso = True
 
     try:
-        # Esegue lo scaricamento e il parsing senza bloccare
-        # il ciclo asincrono del bot.
         allerte = await asyncio.to_thread(find_allerta2)
 
         allerte.sort(
             key=lambda a: (a["rischio"], a["livello"])
         )
 
-        # La firma identifica i livelli di rischio rilevati.
+        # Firma dello stato attuale (es. tupla di tuple con rischio e livello)
         firma = tuple(
             (a["rischio"], a["livello"])
             for a in allerte
         )
 
-        if allerte:
-            righe = [
-                "🚨 BOLLETTINO ALLERTE - SICILIA PER LA GIORNATA DI DOMANI SANTA TERESA DI RIVA",
-                "",
-            ]
-
-            for allerta in allerte:
-                righe.append(
-                    f"• Rischio {allerta['rischio']}: "
-                    f"ALLERTA {allerta['livello']}"
-                )
-
-            messaggio = "\n".join(righe)
-
-        else:
-           # messaggio = (
-           #     "ℹ️ Il parser non ha rilevato allerte "
-           #     "per la Sicilia nei blocchi analizzati."
-           # )
-           messaggio = None
-
         for chat_id in list(chat_ids):
+            vecchia_firma = ultimi_inviati.get(chat_id)
 
-            
-            if ultimi_inviati.get(chat_id) == firma:
+            # Se lo stato per questa chat non è cambiato, non facciamo nulla
+            if vecchia_firma == firma:
                 continue
 
             try:
+                messaggio = None
+
+                if allerte:
+                    # Caso 1: Ci sono allerte attive
+                    righe = [
+                        "🚨 BOLLETTINO ALLERTE - SICILIA (Santa Teresa di Riva)",
+                        "",
+                    ]
+                    for allerta in allerte:
+                        righe.append(
+                            f"• Rischio {allerta['rischio']}: "
+                            f"ALLERTA {allerta['livello']}"
+                        )
+                    messaggio = "\n".join(righe)
+                else:
+                    # Caso 2: Non ci sono allerte (firma == ())
+                    # Invia il messaggio di rientro SOLO SE in questa chat era stata inviata un'allerta in precedenza
+                    if vecchia_firma and vecchia_firma != ():
+                        messaggio = (
+                            "✅ **ALLERTA RIENTRATA**\n\n"
+                            "Non risultano più allerte attive per la Sicilia (Santa Teresa di Riva)."
+                        )
+
+                # Invia il messaggio se è stato valorizzato
                 if messaggio is not None:
                     await context.bot.send_message(
                         chat_id=chat_id,
-                        text=messaggio
+                        text=messaggio,
+                        parse_mode="Markdown"
                     )
+                    print(f"Notifica inviata alla chat {chat_id}.")
 
-                    ultimi_inviati[chat_id] = firma
-
-                    print(
-                        f"Notifica inviata alla chat {chat_id}."
-                    )
+                # Aggiorna lo stato registrato per questa chat
+                ultimi_inviati[chat_id] = firma
 
             except Exception as e:
-                print(
-                    f"Errore invio alla chat {chat_id}: {e}"
-                )
+                print(f"Errore invio alla chat {chat_id}: {e}")
 
     except Exception as e:
-        # In caso di errore non invia un falso messaggio
-        # di assenza di allerte.
         print(f"Errore durante il controllo: {e}")
 
     finally:
         controllo_in_corso = False
 
 
-
-async def start(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
 
     nuova_iscrizione = chat_id not in chat_ids
     chat_ids.add(chat_id)
 
-    if context.job_queue.get_jobs_by_name(NOME_JOB) == ():
+    if not context.job_queue.get_jobs_by_name(NOME_JOB):
         context.job_queue.run_repeating(
             find_allerta,
             interval=INTERVALLO,
-            first=INTERVALLO,
+            first=10,
             name=NOME_JOB
         )
 
     await update.effective_message.reply_text(
         "✅ Monitoraggio delle allerte attivato.\n\n"
-        "Controllerò il bollettino subito e poi ogni ora. "
-        "Riceverai una notifica quando cambia il risultato rilevato."
+        "Riceverai notifiche tempestive in presenza di allerte (Gialla, Arancione, Rossa) e il relativo avviso di rientro."
     )
 
-    
     if nuova_iscrizione:
         await find_allerta(context)
 
 
-
-async def stop(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
 
     chat_ids.discard(chat_id)
@@ -293,13 +264,11 @@ async def stop(
             job.schedule_removal()
 
 
-
-
 def main():
     if not TOKEN:
         raise RuntimeError(
             "Token mancante. Imposta la variabile "
-            "d'ambiente TELEGRAM_BOT_TOKEN prima dell'avvio."
+            "d'ambiente TOKEN prima dell'avvio."
         )
 
     application = (
@@ -314,16 +283,10 @@ def main():
             'python -m pip install "python-telegram-bot[job-queue]"'
         )
 
-    application.add_handler(
-        CommandHandler("start", start)
-    )
-
-    application.add_handler(
-        CommandHandler("stop", stop)
-    )
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("stop", stop))
 
     print("Bot avviato. Premi Ctrl+C per fermarlo.")
-
     application.run_polling()
 
 
