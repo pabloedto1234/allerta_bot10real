@@ -186,7 +186,7 @@ async def find_allerta(context: ContextTypes.DEFAULT_TYPE):
                 if allerte:
                     # Caso 1: Ci sono allerte attive
                     righe = [
-                        "🚨 BOLLETTINO ALLERTE - SICILIA (Santa Teresa di Riva)",
+                        "🚨 BOLLETTINO ALLERTE - SICILIA (Santa Teresa di Riva) DI DOMANI!!",
                         "",
                     ]
                     for allerta in allerte:
